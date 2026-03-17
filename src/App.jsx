@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabase";
 
 const globalStyles = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
@@ -601,25 +602,37 @@ function NoteEditor({ course, notes, setNotes, images, setImages }) {
 }
 
 function PromptLibrary({ promptCards, setPromptCards }) {
-  const [generating, setGenerating] = useState(null); // card id being generated
+  const [generating, setGenerating] = useState(null);
+  const { supabase: sb } = (() => { try { return { supabase: window.__supabase }; } catch { return { supabase: null }; } })();
 
-  const addCard = () => {
-    const id = Date.now();
-    setPromptCards(prev => [...prev, {
-      id,
-      title: "New Prompt",
-      icon: "✨",
-      prompt: "",
-      editingTitle: false
-    }]);
+  const addCard = async () => {
+    const { data, error } = await supabase.from("prompts").insert({
+      title: "New Prompt", category: "✨", content: "", created_at: new Date().toISOString()
+    }).select().single();
+    if (!error && data) {
+      setPromptCards(prev => [...prev, { id: data.id, title: "New Prompt", icon: "✨", prompt: "", editingTitle: false }]);
+    }
   };
 
   const updateCard = (id, fields) => {
     setPromptCards(prev => prev.map(c => c.id === id ? { ...c, ...fields } : c));
   };
 
-  const deleteCard = (id) => {
+  const saveCard = async (id, fields) => {
+    updateCard(id, fields);
+    const card = promptCards.find(c => c.id === id);
+    if (!card) return;
+    const merged = { ...card, ...fields };
+    await supabase.from("prompts").update({
+      title: merged.title,
+      category: merged.icon,
+      content: merged.prompt,
+    }).eq("id", id);
+  };
+
+  const deleteCard = async (id) => {
     setPromptCards(prev => prev.filter(c => c.id !== id));
+    await supabase.from("prompts").delete().eq("id", id);
   };
 
   const generateTitleAndIcon = async (id, promptText) => {
@@ -641,9 +654,9 @@ function PromptLibrary({ promptCards, setPromptCards }) {
       const data = await res.json();
       const text = data.content?.[0]?.text || "";
       const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      updateCard(id, { title: parsed.title || "Untitled Prompt", icon: parsed.icon || "✨" });
+      await saveCard(id, { title: parsed.title || "Untitled Prompt", icon: parsed.icon || "✨" });
     } catch {
-      updateCard(id, { title: "Untitled Prompt", icon: "✨" });
+      await saveCard(id, { title: "Untitled Prompt", icon: "✨" });
     } finally {
       setGenerating(null);
     }
@@ -767,7 +780,10 @@ function PromptLibrary({ promptCards, setPromptCards }) {
               <textarea
                 value={card.prompt}
                 onChange={e => updateCard(card.id, { prompt: e.target.value })}
-                onBlur={() => generateTitleAndIcon(card.id, card.prompt)}
+                onBlur={() => {
+                  saveCard(card.id, { prompt: card.prompt });
+                  generateTitleAndIcon(card.id, card.prompt);
+                }}
                 placeholder="Paste or type your prompt here…"
                 style={{
                   flex: 1, width: "100%", minHeight: 160,
@@ -825,40 +841,60 @@ export default function App() {
   const gridCols = winWidth < 500 ? "1fr" : "repeat(2, 1fr)";
   const [activeTab, setActiveTab] = useState("digest");
   const [selectedCourse, setSelectedCourse] = useState(null);
-  const [completedCourses, setCompletedCourses] = useState(() => {
-    try {
-      const saved = localStorage.getItem("ai_digest_completed");
-      if (saved) return new Set(JSON.parse(saved));
-    } catch {}
-    return new Set();
-  });
-  const [notes, setNotesRaw] = useState(() => {
-    try {
-      const saved = localStorage.getItem("ai_digest_notes");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (!parsed["custom_token_usage"]) parsed["custom_token_usage"] = "";
-        return parsed;
+  const [dbLoading, setDbLoading] = useState(true);
+
+  const [completedCourses, setCompletedCourses] = useState(new Set());
+  const [notes, setNotesRaw] = useState({ ...Object.fromEntries(COURSES.map(c => [c.id, ""])), custom_token_usage: "" });
+  const [noteImages, setNoteImagesRaw] = useState({ ...Object.fromEntries(COURSES.map(c => [c.id, []])), custom_token_usage: [] });
+  const [promptCards, setPromptCardsRaw] = useState([]);
+
+  // Load all data from Supabase on mount
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [notesRes, progressRes, promptsRes] = await Promise.all([
+          supabase.from("notes").select("*"),
+          supabase.from("progress").select("*"),
+          supabase.from("prompts").select("*"),
+        ]);
+
+        if (notesRes.data) {
+          const notesMap = { ...Object.fromEntries(COURSES.map(c => [c.id, ""])), custom_token_usage: "" };
+          const imagesMap = { ...Object.fromEntries(COURSES.map(c => [c.id, []])), custom_token_usage: [] };
+          notesRes.data.forEach(row => {
+            notesMap[row.course_id] = row.content || "";
+            try { imagesMap[row.course_id] = JSON.parse(row.images || "[]"); } catch { imagesMap[row.course_id] = []; }
+          });
+          setNotesRaw(notesMap);
+          setNoteImagesRaw(imagesMap);
+        }
+
+        if (progressRes.data) {
+          const completed = new Set(progressRes.data.filter(r => r.completed).map(r => Number(r.course_id) || r.course_id));
+          setCompletedCourses(completed);
+        }
+
+        if (promptsRes.data) {
+          setPromptCardsRaw(promptsRes.data.map(r => ({
+            id: r.id,
+            title: r.title || "New Prompt",
+            icon: r.category || "✨",
+            prompt: r.content || "",
+            editingTitle: false,
+          })));
+        }
+      } catch (e) {
+        console.error("Failed to load from Supabase", e);
+      } finally {
+        setDbLoading(false);
       }
-    } catch {}
-    return { ...Object.fromEntries(COURSES.map(c => [c.id, ""])), custom_token_usage: "" };
-  });
-  const [noteImages, setNoteImagesRaw] = useState(() => {
-    try {
-      const saved = localStorage.getItem("ai_digest_images");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (!parsed["custom_token_usage"]) parsed["custom_token_usage"] = [];
-        return parsed;
-      }
-    } catch {}
-    return { ...Object.fromEntries(COURSES.map(c => [c.id, []])), custom_token_usage: [] };
-  });
+    }
+    loadData();
+  }, []);
 
   const setNotes = (updater) => {
     setNotesRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      try { localStorage.setItem("ai_digest_notes", JSON.stringify(next)); } catch {}
       return next;
     });
   };
@@ -866,30 +902,42 @@ export default function App() {
   const setNoteImages = (updater) => {
     setNoteImagesRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      try { localStorage.setItem("ai_digest_images", JSON.stringify(next)); } catch {}
       return next;
     });
   };
+
+  const setPromptCards = (updater) => {
+    setPromptCardsRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      return next;
+    });
+  };
+
+  // Save notes to Supabase
+  const saveNotesToDB = async (courseId, content, images) => {
+    await supabase.from("notes").upsert({
+      course_id: String(courseId),
+      content: content || "",
+      images: JSON.stringify(images || []),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "course_id" });
+  };
+
+  // Save progress to Supabase
+  const saveProgressToDB = async (courseId, completed) => {
+    await supabase.from("progress").upsert({
+      course_id: String(courseId),
+      completed,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "course_id" });
+  };
+
   const [tipIndex, setTipIndex] = useState(0);
   const [animateTip, setAnimateTip] = useState(false);
   const [savedAnim, setSavedAnim] = useState(false);
   const [expandedNotes, setExpandedNotes] = useState(() =>
     Object.fromEntries(COURSES.map(c => [c.id, true]))
   );
-  const [promptCards, setPromptCardsRaw] = useState(() => {
-    try {
-      const saved = localStorage.getItem("ai_digest_prompts");
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [];
-  });
-  const setPromptCards = (updater) => {
-    setPromptCardsRaw(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      try { localStorage.setItem("ai_digest_prompts", JSON.stringify(next)); } catch {}
-      return next;
-    });
-  };
   const schedule = generateWeeklySchedule();
 
   useEffect(() => {
@@ -914,12 +962,26 @@ export default function App() {
     setCompletedCourses(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
-      try { localStorage.setItem("ai_digest_completed", JSON.stringify([...next])); } catch {}
+      const isCompleted = next.has(id);
+      saveProgressToDB(id, isCompleted);
       return next;
     });
   };
 
   const progress = Math.round((completedCourses.size / COURSES.length) * 100);
+
+  if (dbLoading) {
+    return (
+      <div style={{
+        minHeight: "100vh", background: "#0a0a0f",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        flexDirection: "column", gap: 16, fontFamily: "'Inter', sans-serif"
+      }}>
+        <div style={{ fontSize: 32 }}>🧠</div>
+        <div style={{ fontSize: 14, color: "#7c6f8a", letterSpacing: "0.1em" }}>Loading your data…</div>
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -1265,11 +1327,11 @@ export default function App() {
 
               {/* Save button */}
               <button
-                onClick={() => {
-                  try {
-                    localStorage.setItem("ai_digest_notes", JSON.stringify(notes));
-                    localStorage.setItem("ai_digest_images", JSON.stringify(noteImages));
-                  } catch {}
+                onClick={async () => {
+                  const allIds = [...COURSES.map(c => c.id), "custom_token_usage"];
+                  await Promise.all(allIds.map(id =>
+                    saveNotesToDB(id, notes[id], noteImages[id])
+                  ));
                   setSavedAnim(true);
                   setTimeout(() => setSavedAnim(false), 2000);
                 }}
