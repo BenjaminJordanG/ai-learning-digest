@@ -601,12 +601,12 @@ function NoteEditor({ course, notes, setNotes, images, setImages }) {
   );
 }
 
-function PromptLibrary({ promptCards, setPromptCards }) {
+function PromptLibrary({ promptCards, setPromptCards, userId }) {
   const [generating, setGenerating] = useState(null);
-  const { supabase: sb } = (() => { try { return { supabase: window.__supabase }; } catch { return { supabase: null }; } })();
 
   const addCard = async () => {
     const { data, error } = await supabase.from("prompts").insert({
+      user_id: userId,
       title: "New Prompt", category: "✨", content: "", created_at: new Date().toISOString()
     }).select().single();
     if (!error && data) {
@@ -831,7 +831,8 @@ function PromptLibrary({ promptCards, setPromptCards }) {
   );
 }
 
-export default function App() {
+export default function App({ session }) {
+  const userId = session?.user?.id;
   const [winWidth, setWinWidth] = useState(window.innerWidth);
   useEffect(() => {
     const handler = () => setWinWidth(window.innerWidth);
@@ -853,9 +854,9 @@ export default function App() {
     async function loadData() {
       try {
         const [notesRes, progressRes, promptsRes] = await Promise.all([
-          supabase.from("notes").select("*"),
-          supabase.from("progress").select("*"),
-          supabase.from("prompts").select("*"),
+          supabase.from("notes").select("*").eq("user_id", userId),
+          supabase.from("progress").select("*").eq("user_id", userId),
+          supabase.from("prompts").select("*").eq("user_id", userId),
         ]);
 
         if (notesRes.data) {
@@ -916,20 +917,22 @@ export default function App() {
   // Save notes to Supabase
   const saveNotesToDB = async (courseId, content, images) => {
     await supabase.from("notes").upsert({
+      user_id: userId,
       course_id: String(courseId),
       content: content || "",
       images: JSON.stringify(images || []),
       updated_at: new Date().toISOString(),
-    }, { onConflict: "course_id" });
+    }, { onConflict: "user_id,course_id" });
   };
 
   // Save progress to Supabase
   const saveProgressToDB = async (courseId, completed) => {
     await supabase.from("progress").upsert({
+      user_id: userId,
       course_id: String(courseId),
       completed,
       updated_at: new Date().toISOString(),
-    }, { onConflict: "course_id" });
+    }, { onConflict: "user_id,course_id" });
   };
 
   const [tipIndex, setTipIndex] = useState(0);
@@ -1018,26 +1021,41 @@ export default function App() {
                 From prompt engineering to agentic systems — one day at a time
               </p>
             </div>
-            <div style={{
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.09)",
-              borderRadius: 14, padding: "14px 20px",
-              flexShrink: 0
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 14, whiteSpace: "nowrap" }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#c9d8e8", letterSpacing: "0.18em", textTransform: "uppercase" }}>Progress</span>
-                <span style={{ fontSize: 12, color: "#5a7a6a" }}>{completedCourses.size} of {COURSES.length} modules</span>
-                <span style={{ fontSize: 16, fontWeight: 600, color: "#a8edca" }}>{progress}%</span>
-                <div style={{ width: 140, height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden" }}>
-                  <div style={{
-                    height: "100%",
-                    width: `${progress}%`,
-                    background: "linear-gradient(90deg, #7c6fff, #60c8f0, #a8edca)",
-                    borderRadius: 3,
-                    transition: "width 0.6s ease"
-                  }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+              <div style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.09)",
+                borderRadius: 14, padding: "14px 20px",
+                flexShrink: 0
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#c9d8e8", letterSpacing: "0.18em", textTransform: "uppercase" }}>Progress</span>
+                  <span style={{ fontSize: 12, color: "#5a7a6a" }}>{completedCourses.size} of {COURSES.length} modules</span>
+                  <span style={{ fontSize: 16, fontWeight: 600, color: "#a8edca" }}>{progress}%</span>
+                  <div style={{ width: 140, height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${progress}%`,
+                      background: "linear-gradient(90deg, #7c6fff, #60c8f0, #a8edca)",
+                      borderRadius: 3,
+                      transition: "width 0.6s ease"
+                    }} />
+                  </div>
                 </div>
               </div>
+              <button
+                onClick={() => supabase.auth.signOut()}
+                style={{
+                  background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)",
+                  borderRadius: 10, padding: "8px 14px", cursor: "pointer",
+                  color: "#5a6a7a", fontSize: 12, fontFamily: "'Inter', sans-serif",
+                  transition: "all 0.2s", whiteSpace: "nowrap"
+                }}
+                onMouseEnter={e => { e.currentTarget.style.color = "#f472b6"; e.currentTarget.style.borderColor = "rgba(244,114,182,0.3)"; }}
+                onMouseLeave={e => { e.currentTarget.style.color = "#5a6a7a"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.09)"; }}
+              >
+                Sign out
+              </button>
             </div>
           </div>
 
@@ -1527,7 +1545,7 @@ export default function App() {
 
         {/* PROMPT & PATTERN LIBRARY TAB */}
         {activeTab === "library" && (
-          <PromptLibrary promptCards={promptCards} setPromptCards={setPromptCards} />
+          <PromptLibrary promptCards={promptCards} setPromptCards={setPromptCards} userId={userId} />
         )}
 
       </div>
