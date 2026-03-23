@@ -734,8 +734,8 @@ function PromptLibrary({ promptCards, setPromptCards, userId }) {
                     autoFocus
                     value={card.title}
                     onChange={e => updateCard(card.id, { title: e.target.value })}
-                    onBlur={() => updateCard(card.id, { editingTitle: false })}
-                    onKeyDown={e => { if (e.key === "Enter") updateCard(card.id, { editingTitle: false }); }}
+                    onBlur={() => saveCard(card.id, { editingTitle: false })}
+                    onKeyDown={e => { if (e.key === "Enter") saveCard(card.id, { editingTitle: false }); }}
                     style={{
                       flex: 1, background: "rgba(255,255,255,0.06)",
                       border: "1px solid rgba(201,184,255,0.4)",
